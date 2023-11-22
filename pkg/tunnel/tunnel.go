@@ -121,6 +121,7 @@ func (t *EdgeTunnel) isRelayPeer(id peer.ID) bool {
 	return false
 }
 
+// 服务发现请求（发送方）
 // discovery function is used in the EdgeTunnel to establish connections with other nodes.
 // It creates a new stream with the given address information (pi) and discovery type (MDNS or DHT) and performs a handshake.
 // If a non-relay node is discovered in DHT discovery, it adds its address to the peerstore to avoid RESERVATION delays.
@@ -199,6 +200,7 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 	t.nodePeerMap[nodeName] = pi.ID
 }
 
+// 服务发现处理函数（接收方）
 // discoveryStreamHandler handles incoming streams for discovery service.
 // It reads the handshake message from the incoming stream and writes a response message,
 // then maps the nodeName and peerID of the remote peer to the nodePeerMap of EdgeTunnel.
@@ -248,6 +250,7 @@ type ProxyOptions struct {
 	Port     int32
 }
 
+// 发起隧道连接（发送方）
 // GetProxyStream establishes a new stream with a destination peer, either directly or through a relay node,
 // by performing a handshake with the destination peer over the stream to confirm the connection.
 // It first looks up the destination peer's ID in a cache, and if not found, generates the peer ID and adds circuit addresses to it.
@@ -326,6 +329,7 @@ func (t *EdgeTunnel) GetProxyStream(opts ProxyOptions) (*StreamConn, error) {
 	return NewStreamConn(stream), nil
 }
 
+// 处理隧道请求（接收方）
 func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	remotePeer := peer.AddrInfo{
 		ID:    stream.Conn().RemotePeer(),
@@ -353,6 +357,7 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	targetPort := msg.GetPort()
 	targetAddr := fmt.Sprintf("%s:%d", targetIP, targetPort)
 
+	// 尝试连接本机的 pod
 	proxyConn, err := tryDialEndpoint(targetProto, targetIP, int(targetPort))
 	if err != nil {
 		klog.Errorf("l4 proxy connect to %v err: %v", msg, err)
@@ -376,6 +381,7 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 
 	streamConn := NewStreamConn(stream)
 	switch targetProto {
+	// 同样是进行 streamConn 和 proxyConn 间的数据拷贝，前者是隧道之间的连接，后者是隧道和 pod 的连接
 	case TCP:
 		go netutil.ProxyConn(streamConn, proxyConn)
 	case UDP:
@@ -384,6 +390,7 @@ func (t *EdgeTunnel) proxyStreamHandler(stream network.Stream) {
 	klog.Infof("Success proxy for {%s %s %s}", targetProto, targetNode, targetAddr)
 }
 
+// 将请求转发给 pod
 // tryDialEndpoint tries to dial to an endpoint with given protocol, ip and port.
 // If TCP or UDP protocol is used, it retries several times and waits for DailSleepTime between each try.
 // If neither TCP nor UDP is used, it returns an error with an unsupported protocol message.
@@ -419,6 +426,7 @@ func tryDialEndpoint(protocol, ip string, port int) (conn net.Conn, err error) {
 	return nil, err
 }
 
+// 连接中继节点，可以通过中继节点获取路由表信息，这样对等点之间才拥有信息进行发现
 // BootstrapConnect tries to connect to a list of bootstrap peers in a relay map.
 // The function runs a loop to attempt connecting to each peer, and will retry if some peers fail to connect.
 // The function returns an error if it fails to connect to all bootstrap peers after a certain period of time.

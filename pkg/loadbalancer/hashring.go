@@ -10,6 +10,8 @@ import (
 	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 )
 
+// 会话保持需要用到哈希环算法，复用了 consistent 库
+
 type defaultHasher struct{}
 
 func (h defaultHasher) Sum64(data []byte) uint64 {
@@ -82,6 +84,17 @@ type HashKey struct {
 
 // getConsistentHashKey get consistent hash key from destination rule object.
 func getConsistentHashKey(dr *istioapi.DestinationRule) HashKey {
+	// DR demo:
+	// apiVersion: networking.istio.io/v1alpha3
+	// kind: DestinationRule
+	// metadata:
+	//   name: hostname-lb-svc
+	// spec:
+	//   host: hostname-lb-svc
+	//   trafficPolicy:
+	//     loadBalancer:
+	//       consistentHash:
+	//         httpHeaderName: User-Agent
 	if dr.Spec.TrafficPolicy == nil {
 		klog.Errorf("destination rule object %s .Spec.TrafficPolicy is nil", getNamespaceName(dr))
 		return HashKey{}
@@ -109,12 +122,12 @@ func getConsistentHashKey(dr *istioapi.DestinationRule) HashKey {
 			return HashKey{}
 		}
 		switch consistentHashLb := lbPolicy.ConsistentHash.HashKey.(type) {
-		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_HttpHeaderName:
+		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_HttpHeaderName: // httpHeaderName
 			return HashKey{Type: HttpHeader, Key: consistentHashLb.HttpHeaderName}
-		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_HttpCookie:
+		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_HttpCookie: // httpCookie
 			klog.Errorf("http cookie is not supported as a hash key")
 			return HashKey{}
-		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_UseSourceIp:
+		case *istiov1alpha3.LoadBalancerSettings_ConsistentHashLB_UseSourceIp: // useSourceIp
 			return HashKey{Type: UserSourceIP, Key: ""}
 		default:
 			klog.Errorf("%s unsupported ConsistentHash fields", getNamespaceName(dr))

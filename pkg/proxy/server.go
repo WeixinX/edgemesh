@@ -75,6 +75,7 @@ func newProxyServer(
 	loadBalancer := loadbalancer.New(lbConfig, client, istioClient, config.ConfigSyncPeriod.Duration)
 	initLoadBalancer(loadBalancer)
 
+	// 使用了 kube-proxy userspace 模块，消费 Service、Endpoints 等元数据
 	proxier, err := userspace.NewCustomProxier(
 		loadBalancer,
 		netutils.ParseIPSloppy(config.BindAddress),
@@ -123,6 +124,7 @@ func (s *ProxyServer) Run() error {
 	labelSelector := labels.NewSelector()
 	labelSelector = labelSelector.Add(*noEdgeMeshProxyName, *noHeadlessEndpoints)
 
+	// 监听 svc 和 endpoints 资源状态
 	// Make informers that filter out objects that want a non-default service proxy.
 	informerFactory := informers.NewSharedInformerFactoryWithOptions(s.kubeClient, s.ConfigSyncPeriod,
 		informers.WithTweakListOptions(func(options *metav1.ListOptions) {
@@ -136,7 +138,7 @@ func (s *ProxyServer) Run() error {
 	serviceConfig.RegisterEventHandler(s.Proxier)
 	go serviceConfig.Run(wait.NeverStop)
 
-	if endpointsHandler, ok := s.Proxier.(config.EndpointsHandler); ok {
+	if endpointsHandler, ok := s.Proxier.(config.EndpointsHandler); ok { // Proxier 包装了一层 EndpointsHandler，实际调用的是 lb 的 handler
 		endpointsConfig := config.NewEndpointsConfig(informerFactory.Core().V1().Endpoints(), s.ConfigSyncPeriod)
 		endpointsConfig.RegisterEventHandler(endpointsHandler)
 		go endpointsConfig.Run(wait.NeverStop)

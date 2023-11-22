@@ -29,6 +29,9 @@ func initLoadBalancer(loadbalancer *loadbalancer.LoadBalancer) {
 	})
 }
 
+// 应该就是在建立一条 iptables 规则，例如
+// 0     0 DNAT       tcp  --  *      *       0.0.0.0/0            10.98.224.23         /* default/hostname-lb-svc:http-0 */ tcp dpt:12345 to:169.254.96.16:45665
+// 然后去监听这个地址和端口 169.254.96.16:45665，169.254.96.16 是 edgemesh0 的地址（Proxier Listen IP），45665 是随机端口
 func newProxySocket(protocol v1.Protocol, ip net.IP, port int) (userspace.ProxySocket, error) {
 	host := ""
 	if ip != nil {
@@ -69,6 +72,8 @@ func (tcp *tcpProxySocket) ListenPort() int {
 	return tcp.port
 }
 
+// 当有 tcp 流量（下面还有个处理 udp 流量的函数）打入监听的 edgemesh0:<random_port>，会到达这个处理函数
+// 这个函数是 proxier 在创建相应的监听 socket 时用一个协程启动的: vendor/k8s.io/kubernetes/pkg/proxy/userspace/proxier.go:482
 func (tcp *tcpProxySocket) ProxyLoop(service proxy.ServicePortName, myInfo *userspace.ServiceInfo, loadBalancer userspace.LoadBalancer) {
 	for {
 		if !myInfo.IsAlive() {
@@ -93,6 +98,7 @@ func (tcp *tcpProxySocket) ProxyLoop(service proxy.ServicePortName, myInfo *user
 			continue
 		}
 		klog.V(3).InfoS("Accepted TCP connection from remote", "remoteAddress", inConn.RemoteAddr(), "localAddress", inConn.LocalAddr())
+		// 根据负载均衡策略选择一个服务后端，返回一个隧道连接
 		outConn, err := internalLoadBalancer.TryConnectEndpoints(service, inConn.RemoteAddr(), "tcp", inConn, nil)
 		if err != nil {
 			klog.ErrorS(err, "Failed to connect to balancer")
@@ -103,6 +109,7 @@ func (tcp *tcpProxySocket) ProxyLoop(service proxy.ServicePortName, myInfo *user
 			continue
 		}
 		// Spin up an async copy loop.
+		// 使用 io.Copy 进行源连接和隧道之间的流拷贝
 		go netutil.ProxyConn(inConn, outConn)
 	}
 }

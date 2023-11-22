@@ -107,6 +107,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		return nil, fmt.Errorf("failed to new conn manager: %w", err)
 	}
 
+	// agent 监听 20006 端口，gateway 监听 20007 端口
 	listenAddr, err := generateListenAddr(c)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate listenAddr: %w", err)
@@ -154,7 +155,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		libp2p.Identity(privKey),
 		listenAddr,
 		libp2p.DefaultSecurity,
-		GenerateTransportOption(c.Transport),
+		GenerateTransportOption(c.Transport), // edge tunnel 隧道协议，支持 tcp、websocket、QUIC
 		libp2p.ConnectionManager(connMgr),
 		libp2p.NATPortMap(),
 		libp2p.Routing(func(h p2phost.Host) (routing.PeerRouting, error) {
@@ -169,8 +170,8 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 			autorelay.WithMaxCandidates(c.MaxCandidates),
 			autorelay.WithBackoff(30*time.Second),
 		),
-		libp2p.EnableNATService(),
-		libp2p.EnableHolePunching(),
+		libp2p.EnableNATService(),   // 打洞相关
+		libp2p.EnableHolePunching(), // 打洞相关
 	}...)
 
 	rcMgrOpts := make([]rcmgr.Option, 0)
@@ -178,11 +179,11 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		reporter, _ := obs.NewStatsTraceReporter()
 		rcMgrOpts = append(rcMgrOpts, rcmgr.WithTraceReporter(reporter))
 	}
-	//Adjust stream limit
+	// Adjust stream limit
 	if limitOpt, err := CreateLimitOpt(c.TunnelLimitConfig, rcMgrOpts...); err == nil {
 		opts = append(opts, limitOpt)
 	}
-	h, err := libp2p.New(opts...)
+	h, err := libp2p.New(opts...) // 创建 libp2p 实例，每个实例都叫做一个 host
 	if err != nil {
 		return nil, fmt.Errorf("failed to new p2p host: %w", err)
 	}
@@ -213,7 +214,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		return nil, fmt.Errorf("failed to bootstrap dht: %w", err)
 	}
 
-	// connect to bootstrap
+	// connect to bootstrap 连接中继节点
 	err = BootstrapConnect(ctx, h, relayMap)
 	if err != nil {
 		// We don't want to return error here, so that some
@@ -222,12 +223,12 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		klog.Warningf("Failed to connect bootstrap: %v", err)
 	}
 
-	// init discovery services
-	mdnsPeerChan, err := initMDNS(h, c.Rendezvous)
+	// init discovery services 初始化发现服务，通过相应的 run 方法发送服务发现请求
+	mdnsPeerChan, err := initMDNS(h, c.Rendezvous) // 同个局域网使用 mDNS 进行对等点发现
 	if err != nil {
 		return nil, fmt.Errorf("init mdns discovery error: %w", err)
 	}
-	dhtPeerChan, err := initDHT(ctx, ddht, c.Rendezvous)
+	dhtPeerChan, err := initDHT(ctx, ddht, c.Rendezvous) // 跨局域网使用 DHT 进行对等点发现
 	if err != nil {
 		return nil, fmt.Errorf("init dht discovery error: %w", err)
 	}
@@ -257,13 +258,14 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		cfgWatcher:       watcher,
 	}
 
-	// run relay finder
+	// run relay finder 运行过程中不断尝试连接中继节点，运行过程中可能有新的路由表信息，这样就可以连接到新的中继节点
 	go edgeTunnel.runRelayFinder(ddht, peerSource, time.Duration(c.FinderPeriod)*time.Second)
 
 	// register stream handlers
 	if c.Mode == defaults.ServerClientMode {
-		h.SetStreamHandler(defaults.DiscoveryProtocol, edgeTunnel.discoveryStreamHandler)
-		h.SetStreamHandler(defaults.ProxyProtocol, edgeTunnel.proxyStreamHandler)
+		// 启动 pb 中的两个协议服务，进行对等点的发现，接收其他对等点发送过来的连接请求
+		h.SetStreamHandler(defaults.DiscoveryProtocol, edgeTunnel.discoveryStreamHandler) // 对等点发现，记录对端发来的信息
+		h.SetStreamHandler(defaults.ProxyProtocol, edgeTunnel.proxyStreamHandler)         // 对等点端到端连接处理
 		h.SetStreamHandler(defaults.CNIProtocol, edgeTunnel.CNIAdapterStreamHandler)
 	}
 	Agent = edgeTunnel
@@ -279,7 +281,7 @@ func generateListenAddr(c *v1alpha1.EdgeTunnelConfig) (libp2p.Option, error) {
 	multiAddrStrings := make([]string, 0)
 	if c.Mode == defaults.ServerClientMode {
 		for _, ip := range ips {
-			multiAddrStrings = append(multiAddrStrings, GenerateMultiAddrString(c.Transport, ip, c.ListenPort))
+			multiAddrStrings = append(multiAddrStrings, GenerateMultiAddrString(c.Transport, ip, c.ListenPort)) // port=20006
 		}
 	} else {
 		for _, ip := range ips {

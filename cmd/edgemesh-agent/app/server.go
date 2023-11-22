@@ -46,6 +46,7 @@ func NewEdgeMeshAgentCommand() *cobra.Command {
 				klog.Exit(kubeedgeutil.SpliceErrors(errs))
 			}
 
+			// 通过用户提供的配置文件 /etc/edgemesh/config/edgemesh-agent.yaml 创建 EdgeMeshAgentConfig 对象
 			cfg, err := opts.Config()
 			if err != nil {
 				klog.Exit(err)
@@ -89,9 +90,15 @@ func NewEdgeMeshAgentCommand() *cobra.Command {
 func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 	defer klog.Infof("edgemesh-agent exited")
 
+	fmt.Println("Hello WeixinX!")
+
 	trace := 1
 
 	klog.Infof("[%d] Prepare agent to run", trace)
+	// 确定 Kube-API 的模式（手动、云、边），若是边缘模式需要生成 kubeconfig
+	// 创建 edgemesh0 网桥，监听 53 DNS 端口和
+	// Proxier 启用的随机端口（详见 proxy/proxysocket.go/newProxySocket）
+	// 设置 Tunnel 的模式
 	if err := prepareRun(cfg); err != nil {
 		return err
 	}
@@ -99,6 +106,7 @@ func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 	trace++
 
 	klog.Infof("[%d] New clients", trace)
+	// 创建 Kube 和 Istio Client
 	cli, err := clients.NewClients(cfg.KubeAPIConfig)
 	if err != nil {
 		return err
@@ -106,12 +114,14 @@ func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 	trace++
 
 	klog.Infof("[%d] Register beehive modules", trace)
+	// 注册 EdgeDNS、EdgeProxy、EdgeTunnel、EdgeCNI 模块，重点关注 proxy 和 tunnel
 	if errs := registerModules(cfg, cli); len(errs) > 0 {
 		return fmt.Errorf(kubeedgeutil.SpliceErrors(errs))
 	}
 	trace++
 
 	klog.Infof("[%d] Cache beehive modules", trace)
+	// 将模块存入 map 中，name -> module
 	if err = module.Initialize(core.GetModules()); err != nil {
 		return err
 	}
@@ -119,6 +129,8 @@ func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 	trace++
 
 	klog.Infof("[%d] Start all modules", trace)
+	// 为每个模块用一个协程调用 Start 方法
+	// 同时设置优雅退出
 	core.Run()
 
 	return nil
@@ -147,6 +159,7 @@ func prepareRun(c *v1alpha1.EdgeMeshAgentConfig) error {
 	// start pprof server
 	profile.ListenAndServer(c.CommonConfig.PprofConfig)
 
+	// 确定 Kube-API 的模式（手动、云、边），若是边缘模式需要生成 kubeconfig
 	// Enter manual mode if user set Master or KubeConfig
 	if c.KubeAPIConfig.Master != "" || c.KubeAPIConfig.KubeConfig != "" {
 		c.KubeAPIConfig.Mode = defaults.ManualMode
@@ -168,8 +181,12 @@ func prepareRun(c *v1alpha1.EdgeMeshAgentConfig) error {
 			c.KubeAPIConfig.KubeConfig = defaults.TempKubeConfigPath
 		}
 	}
+	// 否则运行在 CloudMode 模式下
 
 	// Set dns and proxy modules listenInterface
+	// 创建 edgemesh0 网桥，监听 53 DNS 端口和
+	// Proxier 启用的随机端口（详见 proxy/proxysocket.go/newProxySocket）
+	// 设置 Tunnel 的模式
 	err := netutil.CreateEdgeMeshDevice(c.CommonConfig.BridgeDeviceName, c.CommonConfig.BridgeDeviceIP)
 	if err != nil {
 		return fmt.Errorf("failed to create edgemesh device %s: %w", c.CommonConfig.BridgeDeviceName, err)

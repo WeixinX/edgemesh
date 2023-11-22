@@ -121,9 +121,9 @@ func getPolicyName(dr *istioapi.DestinationRule) string {
 		return ""
 	}
 	switch lbPolicy := dr.Spec.TrafficPolicy.LoadBalancer.LbPolicy.(type) {
-	case *istiov1alpha3.LoadBalancerSettings_Simple:
+	case *istiov1alpha3.LoadBalancerSettings_Simple: // ROUND_ROBIN, RANDOM
 		return lbPolicy.Simple.String()
-	case *istiov1alpha3.LoadBalancerSettings_ConsistentHash:
+	case *istiov1alpha3.LoadBalancerSettings_ConsistentHash: // CONSISTENT_HASH
 		return ConsistentHash
 	default:
 		klog.Errorf("unsupported load balancer policy %v", lbPolicy)

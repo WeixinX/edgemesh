@@ -108,8 +108,8 @@ func NewDefaultEdgeMeshAgentConfig(configPath string) *EdgeMeshAgentConfig {
 		},
 		KubeAPIConfig: defaultKubeConfig,
 		CommonConfig: &CommonConfig{
-			BridgeDeviceName: defaults.BridgeDeviceName,
-			BridgeDeviceIP:   defaults.BridgeDeviceIP,
+			BridgeDeviceName: defaults.BridgeDeviceName, // edgemesh0
+			BridgeDeviceIP:   defaults.BridgeDeviceIP,   // 169.254.96.16
 		},
 		Modules: &AgentModules{
 			EdgeDNSConfig: &EdgeDNSConfig{

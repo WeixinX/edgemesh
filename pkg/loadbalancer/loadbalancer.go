@@ -82,6 +82,9 @@ type LoadBalancer struct {
 	policyMutex sync.Mutex // protects policyMap
 	policyMap   map[proxy.ServicePortName]Policy
 	stopCh      chan struct{}
+
+	metrics     *Metrics
+	metricsLock sync.RWMutex
 }
 
 func New(config *v1alpha1.LoadBalancer, kubeClient kubernetes.Interface, istioClient istio.Interface, syncPeriod time.Duration) *LoadBalancer {
@@ -123,6 +126,7 @@ func (lb *LoadBalancer) Run() error {
 		kubeInformerFactory.Start(lb.stopCh)
 	}
 
+	// 监听 DestinationRule 资源状态，建立 svc 与负载均衡策略的映射表 lb.policyMap
 	istioInformerFactory := istioinformers.NewSharedInformerFactory(lb.istioClient, lb.syncPeriod)
 	drInformer := istioInformerFactory.Networking().V1alpha3().DestinationRules()
 	drInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -511,11 +515,12 @@ func (lb *LoadBalancer) OnEndpointsDelete(endpoints *v1.Endpoints) {
 func (lb *LoadBalancer) OnEndpointsSynced() {
 }
 
+// 根据 DR，为响应的 svc 设置负载均衡策略，以 map 形式存在，使用 Namespace, Name, Port, Protocol 作为 Key，Value 为对应的负载均衡策略
 func (lb *LoadBalancer) OnDestinationRuleAdd(dr *istioapi.DestinationRule) {
 	lb.lock.RLock()
 	defer lb.lock.RUnlock()
 
-	policyName := getPolicyName(dr)
+	policyName := getPolicyName(dr) // RANDOM, ROUND_ROBIN, CONSISTENT_HASH
 	for svcPort, state := range lb.services {
 		if !isNamespacedNameEqual(dr, &svcPort.NamespacedName) {
 			continue
@@ -526,6 +531,7 @@ func (lb *LoadBalancer) OnDestinationRuleAdd(dr *istioapi.DestinationRule) {
 	}
 }
 
+// 类似 Add，只是 CONSISTENT_HASH 需要额外的 Release 和 Update 操作
 func (lb *LoadBalancer) OnDestinationRuleUpdate(oldDr, dr *istioapi.DestinationRule) {
 	lb.lock.RLock()
 	defer lb.lock.RUnlock()
@@ -537,15 +543,16 @@ func (lb *LoadBalancer) OnDestinationRuleUpdate(oldDr, dr *istioapi.DestinationR
 		}
 		lb.policyMutex.Lock()
 		if policy, exists := lb.policyMap[svcPort]; exists && policy.Name() != policyName {
-			lb.policyMap[svcPort].Release()
+			lb.policyMap[svcPort].Release() // RANDOM, ROUND_ROBIN 的 Release 均为空实现
 			delete(lb.policyMap, svcPort)
 		}
 		lb.setLoadBalancerPolicy(dr, policyName, svcPort, state.endpoints)
-		lb.policyMap[svcPort].Update(oldDr, dr)
+		lb.policyMap[svcPort].Update(oldDr, dr) // RANDOM, ROUND_ROBIN 的 Update 均为空实现
 		lb.policyMutex.Unlock()
 	}
 }
 
+// 删除相应的 map 项，CONSISTENT_HASH 需要额外调用 Release 方法清理哈希环
 func (lb *LoadBalancer) OnDestinationRuleDelete(dr *istioapi.DestinationRule) {
 	lb.lock.Lock()
 	defer lb.lock.Unlock()
@@ -567,19 +574,24 @@ func (lb *LoadBalancer) OnDestinationRuleSynced() {
 // setLoadBalancerPolicy new load-balance policy by policy name,
 // this assumes that lb.policyMapLock is already held.
 func (lb *LoadBalancer) setLoadBalancerPolicy(dr *istioapi.DestinationRule, policyName string, svcPort proxy.ServicePortName, endpoints []string) {
-	switch policyName {
-	case RoundRobin:
-		lb.policyMap[svcPort] = NewRoundRobinPolicy()
-	case Random:
-		lb.policyMap[svcPort] = NewRandomPolicy()
-	case ConsistentHash:
-		lb.policyMap[svcPort] = NewConsistentHashPolicy(lb.Config.ConsistentHash, dr, endpoints)
-	default:
-		klog.Errorf("unsupported loadBalance policy %s", policyName)
-		return
-	}
+	// switch policyName {
+	// case RoundRobin:
+	// 	lb.policyMap[svcPort] = NewRoundRobinPolicy()
+	// case Random:
+	// 	lb.policyMap[svcPort] = NewRandomPolicy()
+	// case ConsistentHash:
+	// 	lb.policyMap[svcPort] = NewConsistentHashPolicy(lb.Config.ConsistentHash, dr, endpoints)
+	// case MultiLevel: // TODO(WeixinX)
+	// 	lb.policyMap[svcPort] = NewMultiLevelPolicy()
+	// default:
+	// 	klog.Errorf("unsupported loadBalance policy %s", policyName)
+	// 	return
+	// }
+
+	lb.policyMap[svcPort] = NewMultiLevelPolicy()
 }
 
+// 尝试根据配置的负载均衡策略（不同的服务可能因为用户配置不同的 DestinationRule 而有不同的策略）选择一个后端
 // TryPickEndpoint try to pick a service endpoint from load-balance strategy.
 func (lb *LoadBalancer) tryPickEndpoint(svcPort proxy.ServicePortName, sessionAffinityEnabled bool, endpoints []string,
 	srcAddr net.Addr, netConn net.Conn, cliReq *http.Request) (string, *http.Request, bool) {
@@ -596,7 +608,7 @@ func (lb *LoadBalancer) tryPickEndpoint(svcPort proxy.ServicePortName, sessionAf
 	}
 	endpoint, req, err := policy.Pick(endpoints, srcAddr, netConn, cliReq)
 	if err != nil {
-		return "", req, false
+		return "", req, false // ROUND_ROBIN 会返回一个错误 "call RoundRobinPolicy is forbidden"，因此直接由外层函数通过 state.index 进行选择
 	}
 	return endpoint, req, true
 }
@@ -621,6 +633,7 @@ func (lb *LoadBalancer) nextEndpointWithConn(svcPort proxy.ServicePortName, srcA
 
 	// Note: because loadBalance strategy may have read http.Request from inConn,
 	// so here we need to return it to outConn!
+	// endpoint 条目形如：nodeName:podName:pod-ip:port，如 ke-worker2:hostname-lb-edge-64b45f4fb6-5llrj:10.244.2.4:9376
 	endpoint, req, picked := lb.tryPickEndpoint(svcPort, sessionAffinityEnabled, state.endpoints, srcAddr, netConn, cliReq)
 	if picked {
 		return endpoint, req, nil
@@ -653,7 +666,7 @@ func (lb *LoadBalancer) nextEndpointWithConn(svcPort proxy.ServicePortName, srcA
 		var affinity *affinityState
 		affinity = state.affinity.affinityMap[ipaddr]
 		if affinity == nil {
-			affinity = new(affinityState) //&affinityState{ipaddr, "TCP", "", endpoint, time.Now()}
+			affinity = new(affinityState) // &affinityState{ipaddr, "TCP", "", endpoint, time.Now()}
 			state.affinity.affinityMap[ipaddr] = affinity
 		}
 		affinity.lastUsed = time.Now()
@@ -710,7 +723,7 @@ func (lb *LoadBalancer) dialEndpoint(protocol, endpoint string) (net.Conn, error
 	}
 
 	switch targetNode {
-	case defaults.EmptyNodeName, lb.Config.NodeName:
+	case defaults.EmptyNodeName, lb.Config.NodeName: // 若目的节点是本节点，则使用 go 原生的 net.Dial
 		// TODO: This could spin up a new goroutine to make the outbound connection,
 		// and keep accepting inbound traffic.
 		outConn, err := net.Dial(protocol, net.JoinHostPort(targetIP, targetPort))
@@ -719,7 +732,7 @@ func (lb *LoadBalancer) dialEndpoint(protocol, endpoint string) (net.Conn, error
 		}
 		klog.Infof("Dial legacy network between %s - {%s %s %s:%s}", targetPod, protocol, targetNode, targetIP, targetPort)
 		return outConn, nil
-	default:
+	default: // 若目的节点非本节点，则调用 tunnel 模块的 GetProxyStream 方法，获取 libp2p 的 stream conn
 		targetPort, err := strconv.ParseInt(targetPort, 10, 32)
 		if err != nil {
 			return nil, fmt.Errorf("invalid endpoint %s", endpoint)
@@ -749,7 +762,7 @@ func (lb *LoadBalancer) NewService(svcPort proxy.ServicePortName, affinityType v
 // This assumes that lb.lock is already held.
 func (lb *LoadBalancer) newServiceInternal(svcPort proxy.ServicePortName, affinityType v1.ServiceAffinity, ttlSeconds int) *balancerState {
 	if ttlSeconds == 0 {
-		ttlSeconds = int(v1.DefaultClientIPServiceAffinitySeconds) //default to 3 hours if not specified.  Should 0 be unlimited instead????
+		ttlSeconds = int(v1.DefaultClientIPServiceAffinitySeconds) // default to 3 hours if not specified.  Should 0 be unlimited instead????
 	}
 
 	if _, exists := lb.services[svcPort]; !exists {

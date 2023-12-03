@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"os"
 	"strings"
 
@@ -103,7 +104,21 @@ func Run(cfg *v1alpha1.EdgeMeshGatewayConfig) error {
 	trace++
 
 	klog.Infof("[%d] Register beehive modules", trace)
-	if errs := registerModules(cfg, cli); len(errs) > 0 {
+	nodeNmae, ok := os.LookupEnv("NODE_NAME")
+	if !ok {
+		klog.Fatal("env NODE_NAME not exist")
+	}
+	clusterName, ok := os.LookupEnv("CLUSTER_NAME")
+	if !ok {
+		klog.Fatal("env CLUSTER_NAME not exist")
+	}
+	store := monitor.NewMetricsStore(nodeNmae, clusterName)
+	store.Run()
+	defer store.Stop()
+	localMonitor := monitor.NewLocalMonitor("http://127.0.0.1:8080", store)
+	go localMonitor.Run()
+	defer localMonitor.Stop()
+	if errs := registerModules(cfg, cli, store); len(errs) > 0 {
 		return fmt.Errorf(kubeedgeutil.SpliceErrors(errs))
 	}
 	trace++
@@ -122,12 +137,12 @@ func Run(cfg *v1alpha1.EdgeMeshGatewayConfig) error {
 }
 
 // registerModules register all the modules started in edgemesh-gateway
-func registerModules(c *v1alpha1.EdgeMeshGatewayConfig, cli *clients.Clients) []error {
+func registerModules(c *v1alpha1.EdgeMeshGatewayConfig, cli *clients.Clients, store *monitor.MetricsStore) []error {
 	var errs []error
-	if err := gateway.Register(c.Modules.EdgeGatewayConfig, cli); err != nil {
+	if err := gateway.Register(c.Modules.EdgeGatewayConfig, cli, store); err != nil {
 		errs = append(errs, err)
 	}
-	if err := tunnel.Register(c.Modules.EdgeTunnelConfig); err != nil {
+	if err := tunnel.Register(c.Modules.EdgeTunnelConfig, store); err != nil {
 		errs = append(errs, err)
 	}
 	return errs

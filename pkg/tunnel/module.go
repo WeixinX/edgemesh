@@ -3,6 +3,7 @@ package tunnel
 import (
 	"context"
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -45,6 +46,8 @@ type EdgeTunnel struct {
 	holepunchService *holepunch.Service
 	stopCh           chan struct{}
 	cfgWatcher       *fsnotify.Watcher
+
+	store *monitor.MetricsStore
 }
 
 // Name of EdgeTunnel
@@ -72,8 +75,8 @@ func (t *EdgeTunnel) Shutdown() {
 }
 
 // Register edgetunnel to beehive modules
-func Register(c *v1alpha1.EdgeTunnelConfig) error {
-	agent, err := newEdgeTunnel(c)
+func Register(c *v1alpha1.EdgeTunnelConfig, store *monitor.MetricsStore) error {
+	agent, err := newEdgeTunnel(c, store)
 	if err != nil {
 		return fmt.Errorf("register module EdgeTunnel error: %v", err)
 	}
@@ -81,7 +84,7 @@ func Register(c *v1alpha1.EdgeTunnelConfig) error {
 	return nil
 }
 
-func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
+func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig, store *monitor.MetricsStore) (*EdgeTunnel, error) {
 	if !c.Enable {
 		return &EdgeTunnel{Config: c}, nil
 	}
@@ -256,6 +259,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		holepunchService: holepunchService,
 		stopCh:           make(chan struct{}),
 		cfgWatcher:       watcher,
+		store:            store,
 	}
 
 	// run relay finder 运行过程中不断尝试连接中继节点，运行过程中可能有新的路由表信息，这样就可以连接到新的中继节点
@@ -267,6 +271,7 @@ func newEdgeTunnel(c *v1alpha1.EdgeTunnelConfig) (*EdgeTunnel, error) {
 		h.SetStreamHandler(defaults.DiscoveryProtocol, edgeTunnel.discoveryStreamHandler) // 对等点发现，记录对端发来的信息
 		h.SetStreamHandler(defaults.ProxyProtocol, edgeTunnel.proxyStreamHandler)         // 对等点端到端连接处理
 		h.SetStreamHandler(defaults.CNIProtocol, edgeTunnel.CNIAdapterStreamHandler)
+		h.SetStreamHandler(defaults.HeartbeatProtocol, edgeTunnel.heartbeatStreamHandler)
 	}
 	Agent = edgeTunnel
 	return edgeTunnel, nil

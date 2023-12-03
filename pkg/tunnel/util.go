@@ -79,6 +79,7 @@ func AddCircuitAddrsToPeer(peer *peer.AddrInfo, relayPeers RelayMap) error {
 	return nil
 }
 
+// 该函数没有被使用
 func GeneratePeerInfo(hostname string, addrs []string) (*peer.AddrInfo, error) {
 	priv, err := GenerateKeyPairWithString(hostname)
 	if err != nil {

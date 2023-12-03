@@ -25,6 +25,7 @@ func useLimit(config *v1alpha1.TunnelLimitConfig) *rcmgr.ScalingLimitConfig {
 	scalingLimits.ProtocolPeerBaseLimit.StreamsInbound = config.TunnelPeerBaseStreamIn
 	return &scalingLimits
 }
+
 func useNoLimit() *rcmgr.ScalingLimitConfig {
 	scalingLimits := rcmgr.DefaultLimits
 	protoLimit := rcmgr.BaseLimit{

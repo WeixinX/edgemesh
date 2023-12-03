@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"net"
 	"sync"
 	"time"
@@ -63,8 +64,8 @@ func (gw *EdgeGateway) Shutdown() {
 }
 
 // Register edgegateway to beehive modules
-func Register(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients) error {
-	gw, err := newEdgeGateway(c, cli)
+func Register(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients, store *monitor.MetricsStore) error {
+	gw, err := newEdgeGateway(c, cli, store)
 	if err != nil {
 		return fmt.Errorf("register module %s error: %v", defaults.EdgeGatewayModuleName, err)
 	}
@@ -72,7 +73,7 @@ func Register(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients) error {
 	return nil
 }
 
-func newEdgeGateway(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients) (*EdgeGateway, error) {
+func newEdgeGateway(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients, store *monitor.MetricsStore) (*EdgeGateway, error) {
 	if !c.Enable {
 		return &EdgeGateway{Config: c}, nil
 	}
@@ -87,7 +88,7 @@ func newEdgeGateway(c *v1alpha1.EdgeGatewayConfig, cli *clients.Clients) (*EdgeG
 	kubeClient := cli.GetKubeClient()
 	istioClient := cli.GetIstioClient()
 	syncPeriod := 15 * time.Minute // TODO get from config
-	loadBalancer := loadbalancer.New(c.LoadBalancer, kubeClient, istioClient, syncPeriod)
+	loadBalancer := loadbalancer.New(c.LoadBalancer, kubeClient, istioClient, syncPeriod, store)
 	initLoadBalancer(loadBalancer)
 
 	return &EdgeGateway{

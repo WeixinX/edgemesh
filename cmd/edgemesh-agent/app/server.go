@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"os"
 	"strings"
 
@@ -114,8 +115,22 @@ func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 	trace++
 
 	klog.Infof("[%d] Register beehive modules", trace)
+	nodeNmae, ok := os.LookupEnv("NODE_NAME")
+	if !ok {
+		klog.Fatal("env NODE_NAME not exist")
+	}
+	clusterName, ok := os.LookupEnv("CLUSTER_NAME")
+	if !ok {
+		klog.Fatal("env CLUSTER_NAME not exist")
+	}
+	store := monitor.NewMetricsStore(nodeNmae, clusterName)
+	go store.Run()
+	defer store.Stop()
+	localMonitor := monitor.NewLocalMonitor("http://127.0.0.1:8080", store)
+	go localMonitor.Run()
+	defer localMonitor.Stop()
 	// 注册 EdgeDNS、EdgeProxy、EdgeTunnel、EdgeCNI 模块，重点关注 proxy 和 tunnel
-	if errs := registerModules(cfg, cli); len(errs) > 0 {
+	if errs := registerModules(cfg, cli, store); len(errs) > 0 {
 		return fmt.Errorf(kubeedgeutil.SpliceErrors(errs))
 	}
 	trace++
@@ -137,15 +152,16 @@ func Run(cfg *v1alpha1.EdgeMeshAgentConfig) error {
 }
 
 // registerModules register all the modules started in edgemesh-agent
-func registerModules(c *v1alpha1.EdgeMeshAgentConfig, cli *clients.Clients) []error {
+func registerModules(c *v1alpha1.EdgeMeshAgentConfig, cli *clients.Clients, store *monitor.MetricsStore) []error {
+
 	var errs []error
 	if err := dns.Register(c.Modules.EdgeDNSConfig, cli); err != nil {
 		errs = append(errs, err)
 	}
-	if err := proxy.Register(c.Modules.EdgeProxyConfig, cli); err != nil {
+	if err := proxy.Register(c.Modules.EdgeProxyConfig, cli, store); err != nil {
 		errs = append(errs, err)
 	}
-	if err := tunnel.Register(c.Modules.EdgeTunnelConfig); err != nil {
+	if err := tunnel.Register(c.Modules.EdgeTunnelConfig, store); err != nil {
 		errs = append(errs, err)
 	}
 	if err := cni.Register(c.Modules.EdgeCNIConfig, cli); err != nil {

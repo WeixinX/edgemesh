@@ -58,6 +58,7 @@ const (
 	DiscoveryProtocol protocol.ID = "/libp2p/tunnel-discovery/1.0.0"
 	ProxyProtocol     protocol.ID = "/libp2p/tunnel-proxy/1.0.0"
 	CNIProtocol       protocol.ID = "/libp2p/tunnel-cni/1.0.0"
+	HeartbeatProtocol protocol.ID = "/libp2p/tunnel-heartbeat/1.0.0"
 
 	MdnsDiscovery DiscoveryType = "MDNS"
 	DhtDiscovery  DiscoveryType = "DHT"

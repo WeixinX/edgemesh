@@ -3,6 +3,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 
 	"k8s.io/klog/v2"
 
@@ -49,8 +50,8 @@ func (proxy *EdgeProxy) Shutdown() {
 }
 
 // Register edgeproxy to beehive modules
-func Register(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients) error {
-	proxy, err := newEdgeProxy(c, cli)
+func Register(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients, store *monitor.MetricsStore) error {
+	proxy, err := newEdgeProxy(c, cli, store)
 	if err != nil {
 		return fmt.Errorf("register module edgeproxy error: %v", err)
 	}
@@ -58,7 +59,7 @@ func Register(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients) error {
 	return nil
 }
 
-func newEdgeProxy(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients) (*EdgeProxy, error) {
+func newEdgeProxy(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients, store *monitor.MetricsStore) (*EdgeProxy, error) {
 	fmt.Println("[newEdgeProxy] EdgeProxyConfig:")
 	byteJs, _ := json.MarshalIndent(c, "", "  ")
 	fmt.Println(string(byteJs))
@@ -93,7 +94,7 @@ func newEdgeProxy(c *v1alpha1.EdgeProxyConfig, cli *clients.Clients) (*EdgeProxy
 	}
 
 	// new proxy server
-	proxyServer, err := newProxyServer(NewDefaultKubeProxyConfiguration(listenIP.String()), c.LoadBalancer, cli.GetKubeClient(), cli.GetIstioClient(), c.ServiceFilterMode)
+	proxyServer, err := newProxyServer(NewDefaultKubeProxyConfiguration(listenIP.String()), c.LoadBalancer, cli.GetKubeClient(), cli.GetIstioClient(), c.ServiceFilterMode, store)
 	if err != nil {
 		return nil, fmt.Errorf("new proxy server err: %v", err)
 	}

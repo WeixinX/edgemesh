@@ -122,6 +122,7 @@ func (t *EdgeTunnel) isRelayPeer(id peer.ID) bool {
 }
 
 // 服务发现请求（发送方）
+// TODO(WeixinX): 能否在这实现心跳能力
 // discovery function is used in the EdgeTunnel to establish connections with other nodes.
 // It creates a new stream with the given address information (pi) and discovery type (MDNS or DHT) and performs a handshake.
 // If a non-relay node is discovered in DHT discovery, it adds its address to the peerstore to avoid RESERVATION delays.
@@ -132,7 +133,7 @@ func (t *EdgeTunnel) discovery(discoverType defaults.DiscoveryType, pi peer.Addr
 	}
 	klog.Infof("[%s] Discovery found peer: %s", discoverType, pi)
 
-	// If dht discovery finds a non-relay peer, add the circuit address to this peer.
+	// If dht discovery finds a non-relay peer, add the circuit address to this peer. （什么是 circuit address？中继节点地址吧？）
 	// This is done to avoid delays in RESERVATION https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md.
 	if discoverType == defaults.DhtDiscovery && !t.isRelayPeer(pi.ID) {
 		addrInfo := peer.AddrInfo{ID: pi.ID, Addrs: []ma.Multiaddr{}}
@@ -713,6 +714,7 @@ func (t *EdgeTunnel) Run() {
 	go t.runMdnsDiscovery()
 	go t.runDhtDiscovery()
 	go t.runConfigWatcher()
+	go t.runMyHeartbeat()
 	t.runHeartbeat()
 }
 

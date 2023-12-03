@@ -2,6 +2,7 @@ package loadbalancer
 
 import (
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"net"
 	"net/http"
 	"strconv"
@@ -83,11 +84,11 @@ type LoadBalancer struct {
 	policyMap   map[proxy.ServicePortName]Policy
 	stopCh      chan struct{}
 
-	metrics     *Metrics
-	metricsLock sync.RWMutex
+	// TODO(WeixinX): 以 Monitor 模块传递的信息构造/更新 metrics，更新 metrics 后，由于 MultiLevelPolicy 引用该变量，因此两者可同步
+	store *monitor.MetricsStore
 }
 
-func New(config *v1alpha1.LoadBalancer, kubeClient kubernetes.Interface, istioClient istio.Interface, syncPeriod time.Duration) *LoadBalancer {
+func New(config *v1alpha1.LoadBalancer, kubeClient kubernetes.Interface, istioClient istio.Interface, syncPeriod time.Duration, store *monitor.MetricsStore) *LoadBalancer {
 	return &LoadBalancer{
 		Config:      config,
 		kubeClient:  kubeClient,
@@ -97,6 +98,8 @@ func New(config *v1alpha1.LoadBalancer, kubeClient kubernetes.Interface, istioCl
 		services:    make(map[proxy.ServicePortName]*balancerState),
 		policyMap:   make(map[proxy.ServicePortName]Policy),
 		stopCh:      make(chan struct{}),
+
+		store: store,
 	}
 }
 
@@ -582,13 +585,13 @@ func (lb *LoadBalancer) setLoadBalancerPolicy(dr *istioapi.DestinationRule, poli
 	// case ConsistentHash:
 	// 	lb.policyMap[svcPort] = NewConsistentHashPolicy(lb.Config.ConsistentHash, dr, endpoints)
 	// case MultiLevel: // TODO(WeixinX)
-	// 	lb.policyMap[svcPort] = NewMultiLevelPolicy()
+	// 	lb.policyMap[svcPort] = NewMultiLevelPolicy(lb.store)
 	// default:
 	// 	klog.Errorf("unsupported loadBalance policy %s", policyName)
 	// 	return
 	// }
 
-	lb.policyMap[svcPort] = NewMultiLevelPolicy()
+	lb.policyMap[svcPort] = NewMultiLevelPolicy(lb.store)
 }
 
 // 尝试根据配置的负载均衡策略（不同的服务可能因为用户配置不同的 DestinationRule 而有不同的策略）选择一个后端
@@ -638,6 +641,8 @@ func (lb *LoadBalancer) nextEndpointWithConn(svcPort proxy.ServicePortName, srcA
 	if picked {
 		return endpoint, req, nil
 	}
+
+	// hostname-lb-svc:default:http-0 zjl-edge2:hostname-lb-edge-5f9545bd9b-kjm6c:10.244.2.52:9376
 
 	var ipaddr string
 	if sessionAffinityEnabled {

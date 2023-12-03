@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"fmt"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
 	"time"
 
 	istioclientset "istio.io/client-go/pkg/clientset/versioned"
@@ -64,7 +65,8 @@ func newProxyServer(
 	lbConfig *v1alpha1.LoadBalancer,
 	client clientset.Interface,
 	istioClient istioclientset.Interface,
-	serviceFilterMode defaults.ServiceFilterMode) (*ProxyServer, error) {
+	serviceFilterMode defaults.ServiceFilterMode,
+	store *monitor.MetricsStore) (*ProxyServer, error) {
 	klog.V(0).Info("Using userspace Proxier.")
 
 	// Create a iptables utils.
@@ -72,7 +74,7 @@ func newProxyServer(
 	iptInterface := utiliptables.New(execer, utiliptables.ProtocolIPv4)
 
 	// Initialize a loadBalancer
-	loadBalancer := loadbalancer.New(lbConfig, client, istioClient, config.ConfigSyncPeriod.Duration)
+	loadBalancer := loadbalancer.New(lbConfig, client, istioClient, config.ConfigSyncPeriod.Duration, store)
 	initLoadBalancer(loadBalancer)
 
 	// 使用了 kube-proxy userspace 模块，消费 Service、Endpoints 等元数据

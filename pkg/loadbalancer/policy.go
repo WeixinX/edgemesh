@@ -9,11 +9,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
+	"github.com/kubeedge/edgemesh/pkg/monitor"
+
 	"github.com/buraksezer/consistent"
 	istioapi "istio.io/client-go/pkg/apis/networking/v1alpha3"
 	"k8s.io/klog/v2"
-
-	"github.com/kubeedge/edgemesh/pkg/apis/config/v1alpha1"
 )
 
 const (
@@ -162,65 +163,28 @@ func (ch *ConsistentHashPolicy) Release() {
 const (
 	NodeCpuThreshold float64 = 60
 	NodeMemThreshold float64 = 60
-	PodCpuThreshold  float64 = 60
-	PodMemThreshold  float64 = 60
+	PodCpuThreshold  float64 = 0.6
+	PodMemThreshold  float64 = 0.6
 )
 
 // TODO(WeixinX)
 // 多层次负载均衡策略
 type MultiLevelPolicy struct {
-	// TODO(WeixinX): 需要将部分成员变量放到 LB 结构中，例如 metrics、inCluster、outCluster，这样可以方便更新，
-	//  同时可以在创建新的 svc 时，直接引用这些变量来创建 MultiLevelPolicy
 	selfName    string
 	clusterName string
-	metrics     *Metrics
-	lock        sync.RWMutex // protects inCluster
+	store       *monitor.MetricsStore
 }
 
-type Metrics struct {
-	node       map[string]*NodeInfo // nodeName -> NodeInfo
-	inCluster  *InClusterInfo
-	outCluster *OutClusterInfo
-}
-
-type NodeInfo struct {
-	nodeName    string
-	clusterName string
-	cpuUsage    float64
-	memUsage    float64
-	appInfo     map[string]*AppInfo // appName -> AppInfo
-}
-
-type AppInfo struct {
-	appName     string
-	nodeName    string
-	cpuAvgUsage float64
-	memAvgUsage float64
-	podInfo     []PodInfo
-	index       int
-}
-
-type PodInfo struct {
-	podName  string
-	nodeName string
-	endpoint string // nodeName:podName:ip:port
-	cpuUsage float64
-	memUsage float64
-}
-
-type InClusterInfo struct {
-	nodeCpuAvgUsage float64
-	nodeMemAvgUsage float64
-	appInfo         map[string]*AppInfo // appName -> AppInfo
-}
-
-type OutClusterInfo struct {
-	bestNode map[string]*NodeInfo // appName -> NodeInfo，后台根据节点/应用资源情况计算出来的最佳节点
-}
-
-func NewMultiLevelPolicy() *MultiLevelPolicy {
-	fmt.Println("[Info] [NewMultiLevelPolicy] new a mock struct for test")
-	return mockMultiLevelPolicy
+func NewMultiLevelPolicy(store *monitor.MetricsStore) *MultiLevelPolicy {
+	logHeader := "[NewMultiLevelPolicy]"
+	// fmt.Println("[Info] [NewMultiLevelPolicy] new a mock struct for test")
+	// return mockMultiLevelPolicy
+	klog.Infof("%s new a real struct", logHeader)
+	return &MultiLevelPolicy{
+		selfName:    store.SelfName,
+		clusterName: store.ClusterName,
+		store:       store,
+	}
 }
 
 func (m *MultiLevelPolicy) Name() string {
@@ -228,55 +192,52 @@ func (m *MultiLevelPolicy) Name() string {
 }
 
 func (m *MultiLevelPolicy) Pick(endpoints []string, srcAddr net.Addr, tcpConn net.Conn, cliReq *http.Request) (string, *http.Request, error) {
+	logHeader := "[MultiLevelPolicy.Pick]"
 	if len(endpoints) == 0 {
-		fmt.Println("[Error] [MultiLevelPolicy.Pick] endpoints is empty")
+		klog.Errorf("%s endpoints is empty", logHeader)
 		return "", cliReq, fmt.Errorf("endpoints is empty")
 	}
 	tmp := strings.Split(endpoints[0], ":")
 	if len(tmp) != 4 {
-		fmt.Println("[Error] [MultiLevelPolicy.Pick] endpoint format is invalid")
+		klog.Errorf("%s endpoint(%s) format is invalid", logHeader, endpoints[0])
 		return "", cliReq, fmt.Errorf("endpoint format is invalid")
 	}
 	podName := tmp[1]
 	tmp = strings.Split(podName, "-")
 	if len(tmp) < 2 {
-		fmt.Println("[Error] [MultiLevelPolicy.Pick] pod name format is invalid")
+		klog.Errorf("%s pod name(%s) format is invalid", logHeader, podName)
 		return "", cliReq, fmt.Errorf("pod name format is invalid")
 	}
 	appName := strings.Join(tmp[:len(tmp)-2], "-") // 去掉最后的 pod-id 和 replicaset-id
-	fmt.Printf("[Info] [MultiLevelPolicy.Pick] get app name: %s\n", appName)
+	klog.Infof("%s get app name: %s", logHeader, appName)
 
+	m.store.Lock.RLock()
+	defer m.store.Lock.RUnlock()
 	// 1. 若本地存在对应的 App Pod，且当本地节点负载 < 阈值时，且本地 Pods 的平均负载 < 阈值时，在本地 Pods 间进行轮询
-	localMetrics := m.metrics.node[m.selfName]
-	if localMetrics == nil {
-		fmt.Printf("[Error] [MultiLevelPolicy.Pick] the metrics for local %s can't be found\n", m.selfName)
-		return "", cliReq, fmt.Errorf("the metrics for local can't be found")
-	}
-	if localMetrics.appInfo[appName] != nil &&
-		m.localNodeResourceLTThreshold() && m.localPodResourceLTThreshold(appName) {
+	if m.localExistAppPods(appName) && m.localNodeResourceLTThreshold() && m.localPodResourceLTThreshold(appName) {
 		return m.pickLocal(appName), cliReq, nil
 	}
 
 	// 2. 若(本地不存在对应的 App Pod，或本地节点负载 >= 阈值时，或本地 Pods 的平均负载 >= 阈值)，且(簇内节点负载 < 阈值，且簇内 Pods 的平均负载 < 阈值)时，在簇内节点（Pods）间进行轮询
-	// localMetrics.appInfo[appName] == nil || !m.localNodeResourceLTThreshold() || !m.localPodResourceLTThreshold(appName)
-	if m.metrics.inCluster.appInfo[appName] != nil &&
-		m.inClusterNodeResourceLTThreshold() && m.inClusterPodResourceLTThreshold(appName) {
+	// !m.localExistAppPods(appName) || !m.localNodeResourceLTThreshold() || !m.localPodResourceLTThreshold(appName)
+	if m.inClusterExistAppPods(appName) && m.inClusterNodeResourceLTThreshold() && m.inClusterPodResourceLTThreshold(appName) {
 		return m.pickInCluster(appName), cliReq, nil
 	}
 
 	// 3. 若簇内节点（Pods）负载 >= 阈值时，或簇内 Pods 的平均负载 >= 阈值时，
 	// 选择一个最佳（考虑节点 CPU、内存，带宽、心跳往返时延，Pod CPU、内存）簇外节点进行转发
-	// m.inCluster.appInfo[appName] != nil || m.inClusterNodeResourceLTThreshold() || m.inClusterPodResourceLTThreshold(appName)
+	// !m.inClusterExistAppPods(appName) || !m.inClusterNodeResourceLTThreshold() || !m.inClusterPodResourceLTThreshold(appName)
 	return m.pickOutCluster(appName), cliReq, nil
 }
 
 func (m *MultiLevelPolicy) nodeResourceLTThreshold(nodeName string) bool {
-	metrics := m.metrics.node[m.selfName]
-	if metrics == nil {
-		fmt.Printf("[Error] [MultiLevelPolicy.nodeResourceLTThreshold] the metrics for node %s can't be found\n", m.selfName)
+	logHeader := "[MultiLevelPolicy.nodeResourceLTThreshold]"
+	metrics := m.store.Metrics[nodeName]
+	if metrics == nil || metrics.Status != "OK" || metrics.Node == nil {
+		klog.Errorf("%s the metrics for node %s can't be found", logHeader, nodeName)
 		return false
 	}
-	return metrics.cpuUsage < NodeCpuThreshold && metrics.memUsage < NodeMemThreshold
+	return metrics.Node.CpuPercent < NodeCpuThreshold && metrics.Node.MemPercent < NodeMemThreshold
 }
 
 func (m *MultiLevelPolicy) podResourceLTThreshold(cpu, mem float64) bool {
@@ -288,70 +249,112 @@ func (m *MultiLevelPolicy) localNodeResourceLTThreshold() bool {
 }
 
 func (m *MultiLevelPolicy) localPodResourceLTThreshold(appName string) bool {
-	return m.metrics.node[m.selfName].appInfo[appName].cpuAvgUsage < PodCpuThreshold &&
-		m.metrics.node[m.selfName].appInfo[appName].memAvgUsage < PodMemThreshold
+	logHeader := "[MultiLevelPolicy.localPodResourceLTThreshold]"
+	app := m.store.Metrics[m.selfName].Node.Apps[appName]
+	if app == nil {
+		klog.Errorf("%s the metrics for app %s can't be found", logHeader, appName)
+		return false
+	}
+	return app.CpuAvgPercent < PodCpuThreshold && app.MemAvgPercent < PodMemThreshold
 }
 
 func (m *MultiLevelPolicy) pickLocal(appName string) string {
-	fmt.Printf("[Info] [MultiLevelPolicy.pickLocal] pick app %s pod in local\n", appName)
-	var podInfo PodInfo
-	appInfo := m.metrics.node[m.selfName].appInfo[appName]
+	logHeader := "[MultiLevelPolicy.pickLocal]"
+	klog.Infof("%s pick app %s pod in local", logHeader, appName)
+	var pod monitor.PodInfo
+	app := m.store.Metrics[m.selfName].Node.Apps[appName]
 	for {
-		podInfo = appInfo.podInfo[appInfo.index]
-		appInfo.index = (appInfo.index + 1) % len(appInfo.podInfo)
-		if m.podResourceLTThreshold(podInfo.cpuUsage, podInfo.memUsage) {
+		pod = app.Pods[app.Index]
+		app.Index = (app.Index + 1) % len(app.Pods)
+		if m.podResourceLTThreshold(pod.CpuPercent, pod.MemPercent) {
 			break
 		}
 	}
-	fmt.Printf("[Info] [MultiLevelPolicy.pickLocal] pick endpoint: %s\n", podInfo.endpoint)
-	return podInfo.endpoint
+	klog.Infof("%s pick app %s endpoint: %s", logHeader, appName, pod.Endpoint)
+	return pod.Endpoint
 }
 
 func (m *MultiLevelPolicy) inClusterNodeResourceLTThreshold() bool {
-	return m.metrics.inCluster.nodeCpuAvgUsage < NodeCpuThreshold &&
-		m.metrics.inCluster.nodeMemAvgUsage < NodeMemThreshold
+	return m.store.InCluster.NodeCpuAvgPercent < NodeCpuThreshold &&
+		m.store.InCluster.NodeMemAvgPercent < NodeMemThreshold
 }
 
 func (m *MultiLevelPolicy) inClusterPodResourceLTThreshold(appName string) bool {
-	return m.metrics.inCluster.appInfo[appName].cpuAvgUsage < PodCpuThreshold &&
-		m.metrics.inCluster.appInfo[appName].memAvgUsage < PodMemThreshold
+	logHeader := "[MultiLevelPolicy.inClusterPodResourceLTThreshold]"
+	app, ok := m.store.InCluster.AppsAvg[appName]
+	if !ok {
+		klog.Errorf("%s the avg metrics for app %s can't be found", logHeader, appName)
+		return false
+	}
+	return app.CpuAvgPercent < PodCpuThreshold && app.MemAvgPercent < PodCpuThreshold
 }
 
 func (m *MultiLevelPolicy) pickInCluster(appName string) string {
-	fmt.Printf("[Info] [MultiLevelPolicy.pickInCluster] pick app %s pod in cluster\n", appName)
-	var podInfo PodInfo
-	appInfo := m.metrics.inCluster.appInfo[appName]
+	logHeader := "[MultiLevelPolicy.pickInCluster]"
+	klog.Infof("%s pick app %s pod in cluster", logHeader, appName)
 	for {
-		if appInfo.nodeName == m.selfName {
-			continue
-		}
-		if !m.nodeResourceLTThreshold(appInfo.nodeName) {
-			continue
-		}
-
-		podInfo = appInfo.podInfo[appInfo.index]
-		appInfo.index = (appInfo.index + 1) % len(appInfo.podInfo)
-		if m.podResourceLTThreshold(podInfo.cpuUsage, podInfo.memUsage) {
-			break
+		for _, node := range m.store.InCluster.Nodes {
+			if node.Name == m.selfName {
+				continue
+			}
+			if !m.nodeResourceLTThreshold(node.Name) {
+				continue
+			}
+			if _, exist := node.Apps[appName]; !exist {
+				continue
+			}
+			app := node.Apps[appName]
+			for {
+				pod := app.Pods[app.Index]
+				app.Index = (app.Index + 1) % len(app.Pods)
+				if m.podResourceLTThreshold(pod.CpuPercent, pod.MemPercent) {
+					klog.Infof("%s pick app %s endpoint: %s", logHeader, appName, pod.Endpoint)
+					return pod.Endpoint
+				}
+				if app.Index == 0 {
+					break
+				}
+			}
 		}
 	}
-	fmt.Printf("[Info] [MultiLevelPolicy.pickInCluster] pick endpoint: %s\n", podInfo.endpoint)
-	return podInfo.endpoint
 }
 
 func (m *MultiLevelPolicy) pickOutCluster(appName string) string {
-	fmt.Printf("[Info] [MultiLevelPolicy.pickOutCluster] pick app %s pod in out cluster\n", appName)
-	var podInfo PodInfo
-	appInfo := m.metrics.outCluster.bestNode[appName].appInfo[appName]
+	logHeader := "[MultiLevelPolicy.pickOutCluster]"
+	klog.Infof("%s pick app %s pod in out cluster", logHeader, appName)
+	var pod monitor.PodInfo
+	if m.store.OutCluster == nil || m.store.OutCluster.BestNode == nil || m.store.OutCluster.BestNode[appName] == nil {
+		klog.Errorf("%s the app %s in out cluster can't be found", logHeader, appName)
+		return ""
+	}
+	app := m.store.OutCluster.BestNode[appName].Apps[appName]
 	for {
-		podInfo = appInfo.podInfo[appInfo.index]
-		appInfo.index = (appInfo.index + 1) % len(appInfo.podInfo)
-		if m.podResourceLTThreshold(podInfo.cpuUsage, podInfo.memUsage) {
+		pod = app.Pods[app.Index]
+		app.Index = (app.Index + 1) % len(app.Pods)
+		if m.podResourceLTThreshold(pod.CpuPercent, pod.MemPercent) {
 			break
 		}
 	}
-	fmt.Printf("[Info] [MultiLevelPolicy.pickOutCluster] pick endpoint: %s\n", podInfo.endpoint)
-	return podInfo.endpoint
+	klog.Infof("%s pick app %s endpoint: %s", logHeader, appName, pod.Endpoint)
+	return pod.Endpoint
+}
+
+func (m *MultiLevelPolicy) localExistAppPods(appName string) bool {
+	localMetrics := m.store.Metrics[m.selfName]
+	if localMetrics == nil || localMetrics.Status != "OK" || localMetrics.Node == nil {
+		return false
+	}
+	if localMetrics.Node.Apps != nil && localMetrics.Node.Apps[appName] != nil {
+		return true
+	}
+	return false
+}
+
+func (m *MultiLevelPolicy) inClusterExistAppPods(appName string) bool {
+	if _, exist := m.store.InCluster.AppsAvg[appName]; exist {
+		return true
+	}
+	return false
 }
 
 func (m *MultiLevelPolicy) Update(oldDr, dr *istioapi.DestinationRule) {

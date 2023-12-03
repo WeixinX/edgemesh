@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package tunnel.heartbeat;
+
+option go_package = "github.com/kubeedge/edgemesh/pkg/tunnel/pb/heartbeat";
+
+message Heartbeat {
+  Status status = 1;
+  NodeInfo node = 2;
+  repeated AppInfo apps = 3;
+}
+
+enum Status {
+  OK = 0;
+  FAILED = 1;
+}
+
+message NodeInfo {
+  string name = 1;
+  string clusterName = 2;
+  double cpuPercent = 3;
+  double memPercent = 4;
+}
+
+message AppInfo {
+  string name = 1;
+  string namespace = 2;
+  repeated PodInfo pods = 3;
+}
+
+message PodInfo {
+  string name = 1;
+  string ip = 2;
+  string port = 3;
+  double cpuPercent = 4;
+  double memPercent = 5;
+}
